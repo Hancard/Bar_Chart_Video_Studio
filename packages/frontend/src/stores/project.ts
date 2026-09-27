@@ -25,6 +25,8 @@ export const useProjectStore = defineStore('project', () => {
   const records = ref<RecordInfo[]>([]);
   const loading = ref(false);
   const saving = ref(false);
+  /** 加载项目失败的原因（项目不存在 / 后端没启动 / 接口异常），由 App 层统一提示 */
+  const loadError = ref('');
 
   /** 渲染配置草稿（编辑器实时改，保存才写库） */
   const draftConfig = ref<RenderConfig>({ ...DEFAULT_RENDER_CONFIG });
@@ -81,6 +83,7 @@ export const useProjectStore = defineStore('project', () => {
 
   async function loadProject(id: number) {
     loading.value = true;
+    loadError.value = '';
     try {
       project.value = await api.get<ProjectInfo>(`/projects/${id}`);
       applyConfig({ ...DEFAULT_RENDER_CONFIG, ...project.value.config });
@@ -92,6 +95,14 @@ export const useProjectStore = defineStore('project', () => {
       if (vc && valueColumns.value.includes(vc)) {
         draftConfig.value.valueColumn = vc;
       }
+    } catch (err: any) {
+      // 不能让异常冒到组件的 onMounted —— Vue 只会打一条 warn，页面停在半初始化状态
+      // （配置面板空白 / 图表不渲染），用户完全不知道发生了什么。
+      loadError.value = err?.message ?? String(err);
+      project.value = null;
+      series.value = [];
+      summary.value = null;
+      records.value = [];
     } finally {
       loading.value = false;
     }
@@ -203,10 +214,11 @@ export const useProjectStore = defineStore('project', () => {
     activeValueColumn.value = 'value';
     applyConfig({ ...DEFAULT_RENDER_CONFIG });
     dirty.value = false;
+    loadError.value = '';
   }
 
   return {
-    project, series, summary, records, loading, saving,
+    project, series, summary, records, loading, saving, loadError,
     valueColumns, activeValueColumn,
     draftConfig, dirty, dataset, palette, colorOf,
     loadProject, loadSeries, loadRecords, importRows, importMultiValue, switchValueColumn,

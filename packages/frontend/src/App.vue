@@ -24,7 +24,19 @@
       </nav>
     </header>
     <main class="app-main">
-      <RouterView />
+      <!-- 加载项目失败（项目不存在 / 后端没启动 / 接口异常）：
+           给出原因和出口，否则页面会停在半初始化的空白状态，用户不知道发生了什么 -->
+      <div v-if="loadError" class="load-error">
+        <div class="card">
+          <h3>加载项目失败</h3>
+          <p class="le-msg">{{ loadError }}</p>
+          <p class="le-hint">常见原因：后端服务尚未启动，或该项目已被删除。</p>
+          <div class="le-actions">
+            <button class="primary" @click="backToList">返回项目列表</button>
+          </div>
+        </div>
+      </div>
+      <RouterView v-else />
     </main>
   </div>
 </template>
@@ -46,6 +58,13 @@ const router = useRouter();
 
 const projectId = computed(() => (route.params.id ? Number(route.params.id) : null));
 const dirty = computed(() => store.dirty);
+const loadError = computed(() => store.loadError);
+
+/** 错误页的出口：关掉当前项目（顺带清掉 loadError）再回列表 */
+async function backToList() {
+  store.closeProject();
+  await router.push('/');
+}
 
 /** 关闭当前项目。先检查 dirty，再决定是否弹 confirm */
 async function onClose() {
@@ -114,4 +133,14 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 }
 .close-btn:hover { background: var(--accent-soft, rgba(99,102,241,0.08)); border-color: var(--accent, #6366f1); }
 .app-main { min-height: calc(100vh - 52px); }
+.load-error { display: flex; justify-content: center; padding: 64px 24px; }
+.load-error .card { width: 520px; max-width: 100%; }
+.load-error h3 { margin: 0 0 12px; }
+.le-msg {
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 8px;
+  background: var(--bg); color: var(--text);
+  font-size: 13px; word-break: break-all;
+}
+.le-hint { margin: 0; color: var(--sub); font-size: 13px; }
+.le-actions { display: flex; justify-content: flex-end; margin-top: 18px; }
 </style>
