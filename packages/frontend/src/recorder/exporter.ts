@@ -90,6 +90,31 @@ async function loadFfmpeg(onLog?: (msg: string) => void): Promise<any> {
   throw new Error(`转码内核加载失败（已尝试 ${FFMPEG_CORE_BASES.length} 个源）→ ${errors.join(' | ')}`);
 }
 
+/**
+ * 模块级缓存：转码内核是 ~30MB 的 wasm，加载 + 编译要几秒。
+ * 原实现每次导出都调 loadFfmpeg() —— toBlobURL 每次重新生成 blob URL
+ * （旧的从不 revoke，等于每次导出泄漏约 30MB 内存），wasm 也要重新编译。
+ */
+let ffmpegPromise: Promise<any> | null = null;
+/** 本次导出的转码进度回调（'progress' 监听只注册一次，避免多次导出堆积 handler） */
+let transcodeProgress: ((p: number) => void) | null = null;
+
+async function getFfmpeg(): Promise<any> {
+  if (!ffmpegPromise) {
+    ffmpegPromise = (async () => {
+      const ff = await loadFfmpeg();
+      ff.on('progress', ({ progress }: any) => {
+        if (transcodeProgress && Number.isFinite(progress)) transcodeProgress(progress);
+      });
+      return ff;
+    })().catch((err) => {
+      ffmpegPromise = null; // 加载失败不留缓存，下次导出可重试
+      throw err;
+    });
+  }
+  return ffmpegPromise;
+}
+
 export async function exportVideo(opts: ExportVideoOptions): Promise<ExportResult> {
   const { config, dataset, palette, colorOf, onProgress, signal } = opts;
   const report = (stage: ExportStage, progress: number, message: string) =>
@@ -117,8 +142,11 @@ export async function exportVideo(opts: ExportVideoOptions): Promise<ExportResul
   const manualMode = (() => {
     try {
       const probe = document.createElement('canvas');
-      const st = (probe as any).captureStream(0);
-      return typeof (st.getVideoTracks()[0] as any).requestFrame === 'function';
+      const st: MediaStream = (probe as any).captureStream(0);
+      const ok = typeof (st.getVideoTracks()[0] as any).requestFrame === 'function';
+      // 探测用的捕获流必须立刻停掉，否则每次导出都漏一个 MediaStreamTrack
+      st.getTracks().forEach((t) => t.stop());
+      return ok;
     } catch {
       return false;
     }
@@ -126,6 +154,10 @@ export async function exportVideo(opts: ExportVideoOptions): Promise<ExportResul
 
   const stream: MediaStream = (canvas as any).captureStream(manualMode ? 0 : config.fps);
   const track = stream.getVideoTracks()[0] as any;
+  /** 释放画布捕获流：不 stop 的话每次导出都会留下一个持续捕获画布的 track */
+  const releaseStream = () => {
+    try { stream.getTracks().forEach((t) => t.stop()); } catch { /* noop */ }
+  };
 
   const recorder = new MediaRecorder(stream, {
     mimeType: mime,
@@ -167,6 +199,7 @@ export async function exportVideo(opts: ExportVideoOptions): Promise<ExportResul
     const tick = () => {
       if (signal?.aborted) {
         try { recorder.stop(); } catch { /* noop */ }
+        releaseStream();
         reject(new DOMException('已取消导出', 'AbortError'));
         return;
       }
@@ -191,7 +224,12 @@ export async function exportVideo(opts: ExportVideoOptions): Promise<ExportResul
     setTimeout(tick, frameInterval);
   });
 
-  await stopped;
+  try {
+    await stopped;
+  } finally {
+    // 正常结束 / recorder 报错，捕获流都不再需要（此前不 stop，每次导出都会留下一个持续捕获画布的 track）
+    releaseStream();
+  }
   const recordedMs = performance.now() - startedAt;
 
   if (signal?.aborted) throw new DOMException('已取消导出', 'AbortError');
@@ -207,32 +245,37 @@ export async function exportVideo(opts: ExportVideoOptions): Promise<ExportResul
   }
 
   // ---- ffmpeg.wasm: WebM → H.264 mp4 ----
-  report('transcode', 0, '加载转码内核（首次约 30MB，之后有缓存）…');
+  report('transcode', 0, '加载转码内核（首次约 30MB，之后复用常驻实例）…');
   try {
-    const ffmpeg = await loadFfmpeg();
+    const ffmpeg = await getFfmpeg();
     const { fetchFile } = await import('@ffmpeg/util');
     await ffmpeg.writeFile('in.webm', await fetchFile(rawBlob));
-    ffmpeg.on('progress', ({ progress }: any) => {
-      if (Number.isFinite(progress)) {
-        report('transcode', Math.min(Math.max(progress, 0), 1), `转码 mp4 ${(Math.min(Math.max(progress, 0), 1) * 100).toFixed(0)}%`);
-      }
-    });
+    // 进度回调走模块级变量：'progress' 监听只在 getFfmpeg() 里注册一次，
+    // 否则每导出一次都会往同一个 ffmpeg 实例上挂一个 handler。
+    transcodeProgress = (p) => {
+      const v = Math.min(Math.max(p, 0), 1);
+      report('transcode', v, `转码 mp4 ${(v * 100).toFixed(0)}%`);
+    };
     report('transcode', 0, '转码中（H.264 / yuv420p / faststart）…');
-    await ffmpeg.exec([
-      '-i', 'in.webm',
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-crf', '23',
-      '-pix_fmt', 'yuv420p',
-      '-movflags', '+faststart',
-      '-r', String(config.fps),
-      'out.mp4',
-    ]);
-    const data = await ffmpeg.readFile('out.mp4');
-    const blob = new Blob([data], { type: 'video/mp4' });
-    try { await ffmpeg.deleteFile('in.webm'); await ffmpeg.deleteFile('out.mp4'); } catch { /* noop */ }
-    report('done', 1, '导出完成');
-    return { blob, format: 'mp4', durationMs: Math.round(duration * 1000), fileName: `${baseName}-${stamp}.mp4` };
+    try {
+      await ffmpeg.exec([
+        '-i', 'in.webm',
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-crf', '23',
+        '-pix_fmt', 'yuv420p',
+        '-movflags', '+faststart',
+        '-r', String(config.fps),
+        'out.mp4',
+      ]);
+      const data = await ffmpeg.readFile('out.mp4');
+      const blob = new Blob([data], { type: 'video/mp4' });
+      try { await ffmpeg.deleteFile('in.webm'); await ffmpeg.deleteFile('out.mp4'); } catch { /* noop */ }
+      report('done', 1, '导出完成');
+      return { blob, format: 'mp4', durationMs: Math.round(duration * 1000), fileName: `${baseName}-${stamp}.mp4` };
+    } finally {
+      transcodeProgress = null;
+    }
   } catch (err: any) {
     // 降级：交付 WebM（方案 §9 备选路径）
     const msg = err?.message ?? String(err);
