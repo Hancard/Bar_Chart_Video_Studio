@@ -275,14 +275,21 @@ export function getSummary(projectId: number): DatasetSummary {
     `SELECT
        COUNT(*)                     AS rowCount,
        COUNT(DISTINCT time_order)   AS timeCount,
-       COUNT(DISTINCT entity)       AS entityCount,
-       MIN(time_key)                AS timeMin,
-       MAX(time_key)                AS timeMax
+       COUNT(DISTINCT entity)       AS entityCount
      FROM time_series WHERE project_id = ?`
   ).get(projectId) as {
     rowCount: number; timeCount: number; entityCount: number;
-    timeMin: string | null; timeMax: string | null;
   };
+  // 时间范围不能再用 MIN/MAX(time_key)：time_key 是 TEXT，走的是**字典序** ——
+  // 月份 1..12 会得到 max="9"，2024-1..2024-12 会得到 max="2024-2"，
+  // 前端摘要就会显示成「2024-1 ~ 2024-2」这种明显错误的范围。
+  // 必须按 time_order（入库时算好的时间顺序）取首尾。
+  const first = db.prepare(
+    'SELECT time_key FROM time_series WHERE project_id = ? ORDER BY time_order ASC LIMIT 1'
+  ).get(projectId) as { time_key: string } | undefined;
+  const last = db.prepare(
+    'SELECT time_key FROM time_series WHERE project_id = ? ORDER BY time_order DESC LIMIT 1'
+  ).get(projectId) as { time_key: string } | undefined;
   const meta = getDatasetMeta(projectId);
   const cols = meta.valueColumns;
   // 与 GET /datasets 的三级解析对齐：project.config.valueColumn 有效时优先于 meta 默认列，
@@ -307,8 +314,8 @@ export function getSummary(projectId: number): DatasetSummary {
     rowCount: r.rowCount ?? 0,
     timeCount: r.timeCount ?? 0,
     entityCount: r.entityCount ?? 0,
-    timeMin: r.timeMin,
-    timeMax: r.timeMax,
+    timeMin: first?.time_key ?? null,
+    timeMax: last?.time_key ?? null,
     missingValues,
     valueColumns: cols,
     activeValueColumn,
