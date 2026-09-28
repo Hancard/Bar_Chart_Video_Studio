@@ -45,21 +45,54 @@ export function stripBOM(text: string): string {
   return text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
 }
 
-/** 把 sheet 内二维数组 → ParsedTable（供通用路径使用） */
+/**
+ * 把 sheet 内二维数组 → ParsedTable（供通用路径使用）
+ *
+ * 表头会做唯一化：政府/企业 Excel 里合并单元格、重复年份做表头很常见
+ * （如两列都叫「2020」）。列名重复时后续全部按 `fields.indexOf(name)` 定位，
+ * 只会命中第一列 —— 表现为"选了第二列却拿到第一列的数据"。这里给重复项加序号。
+ */
 function aoaToTable(aoa: unknown[][]): ParsedTable {
   const trimmed = aoa.map(r => r.map(c => String(c ?? '').trim()));
-  const fields = (trimmed.shift() ?? []).map((f, i) => (f ? f : `列${i + 1}`));
+  const raw = trimmed.shift() ?? [];
+  const seen = new Map<string, number>();
+  const fields = raw.map((f, i) => {
+    let name = f ? f : `列${i + 1}`;
+    const n = seen.get(name);
+    if (n === undefined) {
+      seen.set(name, 1);
+    } else {
+      seen.set(name, n + 1);
+      name = `${name}(${n + 1})`;
+    }
+    return name;
+  });
   return { fields, rows: trimmed, source: 'xlsx' };
+}
+
+/**
+ * workbook 缓存：readXlsxSheets() + readXlsxSheet() 原本各自 XLSX.read 整个文件，
+ * 用户在预览里切一次 sheet 就要把整个工作簿重新解析一遍（几 MB 的表要等上一会儿）。
+ * 以 File 对象为 key 缓存（WeakMap，不阻止回收）。
+ */
+const workbookCache = new WeakMap<File, XLSX.WorkBook>();
+
+async function loadWorkbook(file: File): Promise<XLSX.WorkBook> {
+  const hit = workbookCache.get(file);
+  if (hit) return hit;
+  const buf = await file.arrayBuffer();
+  const wb = XLSX.read(buf, { type: 'array' });
+  workbookCache.set(file, wb);
+  return wb;
 }
 
 /** 读取 xlsx：返回所有 sheet 名称 + 默认第 1 个 sheet 的数据 */
 export async function readXlsxSheets(file: File): Promise<ParsedXlsxResult> {
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type: 'array' });
+  const wb = await loadWorkbook(file);
   if (wb.SheetNames.length === 0) {
     return { sheetNames: [], sheetName: '', fields: [], rows: [] };
   }
-  // 选第一个"像数据表"的 sheet：要求至少 1 行 1 列；首 sheet 通常就是
+  // 选第一个"像数据表"的 sheet：要求至少 2 行；首 sheet 通常就是
   let pick = wb.SheetNames[0];
   for (const sn of wb.SheetNames) {
     const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, blankrows: false, defval: '' });
@@ -73,8 +106,7 @@ export async function readXlsxSheets(file: File): Promise<ParsedXlsxResult> {
 
 /** 给定 xlsx 文件 + sheet 名，返回该 sheet 的 ParsedTable（用于"切换 sheet 预览"） */
 export async function readXlsxSheet(file: File, sheetName: string): Promise<ParsedTable> {
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type: 'array' });
+  const wb = await loadWorkbook(file);
   if (!wb.Sheets[sheetName]) throw new Error(`Sheet 不存在: ${sheetName}`);
   const aoa = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[sheetName], { header: 1, blankrows: false, defval: '' });
   return aoaToTable(aoa);
@@ -161,8 +193,6 @@ export function guessMapping(table: ParsedTable): ColumnMapping | null {
     // 兜底：找数值比例最高的列作 value，第一列作 time、第二列作 entity
     // ★ 关键防御：排除"标识/编码"类列——它们 100% 是数字但语义上不是统计值
     // （如「省份代码」110000：数值比例满格，但每行恒定，作为 value 会导致条形图一动不动）
-    // ★ 关键防御：排除"标识/编码"类列——它们 100% 是数字但语义上不是统计值
-    // （如「省份代码」110000：数值比例满格，但每行恒定，作为 value 会导致条形图一动不动）
     // 值列还应是"有变化"的：同一列在不同行间有多个不同取值才像统计数据
     const hasVariance = (ci: number) => {
       const distinct = new Set(rows.map(r => r[ci]));
@@ -178,10 +208,13 @@ export function guessMapping(table: ParsedTable): ColumnMapping | null {
     value = fields[valueIdx];
   }
 
-  // 候选"值列"：除时间/实体/标识列外，其它可解析为数值的列都是候选
-  const numericCols = fields.filter(f =>
-    f !== time && f !== entity && !isIdentifierColumn(f) &&
-    numericRatioOfColumn(rows, fields.indexOf(f)) > 0.4
+  // 候选"值列"：除时间/实体/标识列外，其它可解析为数值的列都是候选。
+  // 注意按**下标**遍历比较（不能用 fields.indexOf(f)：列名重复时它总是返回第一个下标）
+  const ti = fields.indexOf(time);
+  const ei = fields.indexOf(entity);
+  const numericCols = fields.filter((f, i) =>
+    i !== ti && i !== ei && !isIdentifierColumn(f) &&
+    numericRatioOfColumn(rows, i) > 0.4
   );
   return { time: time!, entity: entity!, value: value!, valueCandidates: numericCols.length ? numericCols : undefined };
 }
