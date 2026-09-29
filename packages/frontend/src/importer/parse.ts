@@ -4,7 +4,14 @@
  */
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
-import { decodeBytes, type TimeSeriesRow } from '@barstudio/shared';
+import {
+  decodeBytes,
+  pickColumn,
+  TIME_COLUMN_ALIASES,
+  ENTITY_COLUMN_ALIASES,
+  VALUE_COLUMN_ALIASES,
+  type TimeSeriesRow,
+} from '@barstudio/shared';
 
 export interface ParsedTable {
   fields: string[];
@@ -173,21 +180,11 @@ export async function parseFile(file: File): Promise<ParsedTable> {
 export function guessMapping(table: ParsedTable): ColumnMapping | null {
   const { fields, rows } = table;
   if (fields.length < 3) return null;
-  const find = (aliases: string[]) =>
-    fields.find(f => aliases.some(a => f.toLowerCase().includes(a.toLowerCase())));
-
-  let time = find(['time', '时间', '年份', 'year', '日期', 'date', 'quarter', '季度']);
-  let entity = find([
-    'entity', '实体', '名称', '国家', '公司', 'name', '厂商', '品牌', '地区', '城市',
-    // 政府统计常见：省份/地市/区县/机构
-    '省份', 'province', '地市', '区县', '机构', '单位', '行业', '区域',
-  ]);
-  let value = find([
-    'value', '数值', '值', '数量', 'count', '产量', '销量', '出货量',
-    // 经济统计常见指标词
-    '支出', '收入', '消费', 'gdp', '人均', '总额', '金额', '利润', '税收', '工资',
-    '人口', '面积', '增长', '增速', '指数', '价格', '房价', '零售额', '营业额',
-  ]);
+  // 列名识别统一走 shared/columns.ts：精确匹配优先（避免「数量说明」抢「数值」），
+  // 且与后端 parseLongCsv 共用同一套别名 —— 以前两处各写一份，能识别的表头都不一样。
+  let time = pickColumn(fields, TIME_COLUMN_ALIASES);
+  let entity = pickColumn(fields, ENTITY_COLUMN_ALIASES);
+  let value = pickColumn(fields, VALUE_COLUMN_ALIASES);
 
   if (!time || !entity || !value) {
     // 兜底：找数值比例最高的列作 value，第一列作 time、第二列作 entity

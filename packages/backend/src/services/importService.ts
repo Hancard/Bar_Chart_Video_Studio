@@ -10,6 +10,7 @@
 import db, { contentHash } from '../db';
 import Papa from 'papaparse';
 import type { DatasetSummary, TimeSeriesRow } from '@barstudio/shared';
+import { pickColumn, TIME_COLUMN_ALIASES, ENTITY_COLUMN_ALIASES, VALUE_COLUMN_ALIASES } from '@barstudio/shared';
 
 export interface ImportResult {
   imported: number;
@@ -330,7 +331,7 @@ export function hasData(projectId: number): boolean {
 /** 后端侧 CSV 长表解析 */
 export function parseLongCsv(text: string): { rows: TimeSeriesRow[]; errors: string[] } {
   // BOM 探测：Excel/记事本另存的 UTF-8 CSV 会带 \uFEFF 首字符。
-  // 不剥会污染第一个列头（"时间" → "\uFEFF时间"），让 pickCol 全部失配。
+  // 不剥会污染第一个列头（"时间" → "\uFEFF时间"），让列识别全部失配。
   const cleaned = stripBOM(text).trim();
   const result = Papa.parse<Record<string, string>>(cleaned, {
     header: true,
@@ -341,28 +342,42 @@ export function parseLongCsv(text: string): { rows: TimeSeriesRow[]; errors: str
     errors.push(...result.errors.slice(0, 5).map(e => `第 ${e.row ?? '?'} 行解析异常: ${e.message}`));
   }
   const fields = result.meta.fields ?? [];
-  const pickCol = (aliases: string[]) => fields.find(f => aliases.some(a => f.toLowerCase().includes(a.toLowerCase())));
-  const timeCol = pickCol(['time', '时间', '年份', 'year', 'date', '日期', 'quarter']);
-  const entityCol = pickCol(['entity', '实体', '名称', '国家', '公司', 'name', '厂商', '品牌']);
-  const valueCol = pickCol(['value', '数值', '值', '数量', 'count']);
+  // 列识别走 shared/columns.ts —— 与前端 guessMapping 用同一套别名与优先级。
+  // 原来这里自维护了一份更短的别名表（没有 地区/省份/城市…），结果同一份 CSV
+  // 前端能导入、走后端路径却报「无法识别列」。
+  const timeCol = pickColumn(fields, TIME_COLUMN_ALIASES);
+  const entityCol = pickColumn(fields, ENTITY_COLUMN_ALIASES);
+  const valueCol = pickColumn(fields, VALUE_COLUMN_ALIASES);
   if (!timeCol || !entityCol || !valueCol) {
     return { rows: [], errors: [`无法识别列：需要 time/entity/value 语义的列，实际表头为 [${fields.join(', ')}]。请改用前端导入做列映射。`] };
   }
   const rows: TimeSeriesRow[] = [];
+  // 明细错误最多记 DETAIL_LIMIT 条，其余只汇总计数 ——
+  // 原来对每个坏行都 push 一条字符串，万行级别的坏数据会堆出一万个字符串（最后又只留 20 条）。
+  const DETAIL_LIMIT = 20;
+  let emptyKeyRows = 0;
+  let unparsable = 0;
   for (const rec of result.data) {
     const t = (rec[timeCol] ?? '').trim();
     const e = (rec[entityCol] ?? '').trim();
     const rawV = String(rec[valueCol] ?? '').trim();
-    if (!t || !e) { errors.push(`存在空 time/entity 的行，已跳过`); continue; }
+    if (!t || !e) { emptyKeyRows++; continue; }
     // 空单元格 = 缺失数据，按缺失跳过（与 toNumOrNull 语义一致）。
     // 不能用 Number(raw)：Number('') === 0 会把缺测静默导入成 0，柱长失真。
-    const cleaned = rawV.replace(/[,，\s%¥$]/g, '');
-    const v = cleaned === '' || cleaned === '-' || cleaned === '—' ? null : Number(cleaned);
+    const cleanedV = rawV.replace(/[,，\s%¥$]/g, '');
+    const v = cleanedV === '' || cleanedV === '-' || cleanedV === '—' ? null : Number(cleanedV);
     if (v === null || !Number.isFinite(v)) {
-      if (rawV !== '') errors.push(`实体「${e}」在「${t}」的数值「${rawV}」无法解析，已跳过`);
+      if (rawV !== '') {
+        unparsable++;
+        if (errors.length < DETAIL_LIMIT) {
+          errors.push(`实体「${e}」在「${t}」的数值「${rawV}」无法解析，已跳过`);
+        }
+      }
       continue;
     }
     rows.push({ time_key: t, entity: e, value: v });
   }
-  return { rows, errors: errors.slice(0, 20) };
+  if (emptyKeyRows > 0) errors.push(`另有 ${emptyKeyRows} 行因 time/entity 为空被跳过`);
+  if (unparsable > DETAIL_LIMIT) errors.push(`共 ${unparsable} 行数值无法解析（仅列出前 ${DETAIL_LIMIT} 条明细），已跳过`);
+  return { rows, errors: errors.slice(0, DETAIL_LIMIT + 5) };
 }
