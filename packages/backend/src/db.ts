@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS records (
   size_bytes  INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+-- records 一直缺索引：/records?projectId=x 与每个项目的成片计数都是全表扫。
+-- IF NOT EXISTS 让旧库启动时自动补上。
+CREATE INDEX IF NOT EXISTS idx_records_project ON records(project_id, created_at);
 
 CREATE TABLE IF NOT EXISTS ai_tasks (
   id INTEGER PRIMARY KEY,
