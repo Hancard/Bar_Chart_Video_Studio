@@ -211,6 +211,8 @@ async function archive() {
       config_snapshot: { ...cfg },
       duration_ms: result.value.durationMs,
       size_bytes: result.value.blob.size,
+      // 传实际产出格式：不传的话后端默认 mp4，WebM 成片的下载后缀/Content-Type 都会是错的
+      format: result.value.format,
     });
     await api.uploadFile(`/records/${rec.id}/file`, result.value.blob, result.value.fileName);
     await store.loadRecords();

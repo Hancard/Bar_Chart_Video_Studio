@@ -38,13 +38,13 @@ export async function recordRoutes(app: FastifyInstance) {
   app.post('/records', async (req, reply) => {
     const parsed = createRecordSchema.safeParse(req.body ?? {});
     if (!parsed.success) return reply.status(400).send(validationError(parsed.error));
-    const { project_id, config_snapshot, duration_ms, size_bytes } = parsed.data;
+    const { project_id, config_snapshot, duration_ms, size_bytes, format } = parsed.data;
     const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(project_id);
     if (!project) return reply.status(404).send(notFound());
     const r = db.prepare(
       `INSERT INTO records (project_id, config_snapshot, format, width, height, fps, duration_ms, size_bytes)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(project_id, JSON.stringify(config_snapshot), 'mp4',
+    ).run(project_id, JSON.stringify(config_snapshot), format,
       config_snapshot.width, config_snapshot.height, config_snapshot.fps, duration_ms, size_bytes);
     const row = db.prepare('SELECT * FROM records WHERE id = ?').get(r.lastInsertRowid) as RecordRow;
     return reply.status(201).send({ data: toInfo(row) });

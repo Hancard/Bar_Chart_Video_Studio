@@ -165,6 +165,28 @@ async function run() {
   });
   assert(r1.status === 201 && r1.body.data.id > 0, '登记作品记录');
   const recId = r1.body.data.id;
+  // 不传 format 时默认 mp4（老客户端的兼容路径）
+  assert(r1.body.data.format === 'mp4', '未指定 format 时默认 mp4', `format=${r1.body.data.format}`);
+
+  // 21b) 显式声明 webm：以前后端写死 'mp4'，WebM 成片的下载后缀/Content-Type 全是错的
+  const rWebm = await req('POST', '/records', {
+    project_id: pidA,
+    config_snapshot: { width: 1280, height: 720, fps: 30 },
+    duration_ms: 3000,
+    size_bytes: 999,
+    format: 'webm',
+  });
+  assert(rWebm.status === 201 && rWebm.body.data.format === 'webm',
+    '声明的 format=webm 被如实保存', `format=${rWebm.body.data.format}`);
+  const rBadFmt = await req('POST', '/records', {
+    project_id: pidA,
+    config_snapshot: { width: 1280, height: 720, fps: 30 },
+    duration_ms: 3000,
+    size_bytes: 999,
+    format: 'avi',
+  });
+  assert(rBadFmt.status === 400, '非法 format 被拒（zod 枚举）', `status=${rBadFmt.status}`);
+  await req('DELETE', `/records/${rWebm.body.data.id}`);
 
   // 22) 列表 + 按 projectId 过滤
   const lr = await req('GET', '/records');

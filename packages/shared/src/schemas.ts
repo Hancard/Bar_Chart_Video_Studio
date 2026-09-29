@@ -68,4 +68,7 @@ export const createRecordSchema = z.object({
   config_snapshot: renderConfigSchema,
   duration_ms: z.number().int().min(0).default(0),
   size_bytes: z.number().int().min(0).default(0),
+  /** 实际产出格式。以前后端写死 'mp4'，导出 WebM 的记录也会标成 mp4，
+   *  下载时用错的 Content-Type 与扩展名（内容与后缀不符）。 */
+  format: z.enum(['mp4', 'webm']).default('mp4'),
 });
