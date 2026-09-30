@@ -53,27 +53,32 @@ export function stripBOM(text: string): string {
 }
 
 /**
- * 把 sheet 内二维数组 → ParsedTable（供通用路径使用）
+ * 表头唯一化：重复列名按出现顺序加序号（2020 / 2020(2)），空表头补成「列N」。
  *
- * 表头会做唯一化：政府/企业 Excel 里合并单元格、重复年份做表头很常见
- * （如两列都叫「2020」）。列名重复时后续全部按 `fields.indexOf(name)` 定位，
- * 只会命中第一列 —— 表现为"选了第二列却拿到第一列的数据"。这里给重复项加序号。
+ * 为什么必须有：Excel 合并单元格、同名年份列、重复表头在真实数据里很常见，
+ * 而下游一律用 `fields.indexOf(name)` 定位列 —— 重名时只能命中第一列，
+ * 表现为「选了第二列却拿到第一列的数据」。三个解析入口（xlsx / CSV / 粘贴）都要过这里。
+ */
+export function uniqueFields(raw: string[]): string[] {
+  const seen = new Map<string, number>();
+  return raw.map((f, i) => {
+    const base = f ? f : `列${i + 1}`;
+    const n = seen.get(base);
+    if (n === undefined) {
+      seen.set(base, 1);
+      return base;
+    }
+    seen.set(base, n + 1);
+    return `${base}(${n + 1})`;
+  });
+}
+
+/**
+ * 把 sheet 内二维数组 → ParsedTable（供通用路径使用）
  */
 function aoaToTable(aoa: unknown[][]): ParsedTable {
   const trimmed = aoa.map(r => r.map(c => String(c ?? '').trim()));
-  const raw = trimmed.shift() ?? [];
-  const seen = new Map<string, number>();
-  const fields = raw.map((f, i) => {
-    let name = f ? f : `列${i + 1}`;
-    const n = seen.get(name);
-    if (n === undefined) {
-      seen.set(name, 1);
-    } else {
-      seen.set(name, n + 1);
-      name = `${name}(${n + 1})`;
-    }
-    return name;
-  });
+  const fields = uniqueFields(trimmed.shift() ?? []);
   return { fields, rows: trimmed, source: 'xlsx' };
 }
 
@@ -138,7 +143,7 @@ export function parseDelimitedText(text: string): ParsedTable {
     delimiter: isTsv ? '\t' : '',
   });
   const rows = (result.data as string[][]).map(r => r.map(c => (c ?? '').trim()));
-  const fields = rows.shift() ?? [];
+  const fields = uniqueFields(rows.shift() ?? []);
   return { fields, rows, source: 'text' };
 }
 
@@ -148,8 +153,8 @@ export function parseCsvFile(text: string): ParsedTable {
     skipEmptyLines: 'greedy',
   });
   const rows = (result.data as string[][]).map(r => r.map(c => (c ?? '').trim()));
-  // 字段名也去 BOM（防止 header 第一个字段被污染导致列映射失效）
-  const fields = (rows.shift() ?? []).map(f => stripBOM(f));
+  // 字段名先去 BOM（防止 header 第一个字段被污染导致列映射失效），再做唯一化
+  const fields = uniqueFields((rows.shift() ?? []).map(f => stripBOM(f)));
   return { fields, rows, source: 'csv' };
 }
 
@@ -167,7 +172,7 @@ export async function parseFile(file: File): Promise<ParsedTable> {
     try {
       const arr = JSON.parse(text);
       const rows = Array.isArray(arr) ? arr : [];
-      const fields = rows.length ? Object.keys(rows[0]) : [];
+      const fields = uniqueFields(rows.length ? Object.keys(rows[0]) : []);
       return { fields, rows: rows.map((r: any) => fields.map(f => String(r[f] ?? ''))), source: 'csv' };
     } catch {
       throw new Error('JSON 解析失败：请提供长表数组');

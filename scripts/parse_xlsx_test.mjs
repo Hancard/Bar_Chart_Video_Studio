@@ -11,7 +11,14 @@
  * 顺带验证 workbook 缓存没有破坏多 sheet 预览。
  */
 import * as XLSX from 'xlsx';
-import { readXlsxSheets, readXlsxSheet, guessMapping } from '../packages/frontend/src/importer/parse.ts';
+import {
+  readXlsxSheets,
+  readXlsxSheet,
+  guessMapping,
+  parseCsvFile,
+  parseDelimitedText,
+  uniqueFields,
+} from '../packages/frontend/src/importer/parse.ts';
 
 const RED = '\x1b[31m', GRN = '\x1b[32m', YEL = '\x1b[33m', RST = '\x1b[0m';
 let pass = 0, fail = 0;
@@ -105,6 +112,35 @@ function makeXlsx(sheets) {
     '列映射正确识别 time/entity/value', JSON.stringify(m));
   assert(m && m.valueCandidates && m.valueCandidates.includes('数值') && m.valueCandidates.includes('数值(2)'),
     '同名的第二列也作为候选值列出现（以前会因同名被漏掉）', JSON.stringify(m?.valueCandidates));
+}
+
+// 6) CSV / 粘贴入口同样要唯一化 —— 这两条路径以前漏掉了（只有 xlsx 走了唯一化）
+{
+  const t = parseCsvFile('时间,2020,2020\nA,1,2\nB,3,4');
+  assert(t.fields.join(',') === '时间,2020,2020(2)',
+    'CSV 入口：重复表头被唯一化', JSON.stringify(t.fields));
+  assert(t.fields.indexOf('2020') !== t.fields.indexOf('2020(2)'),
+    'CSV 入口：两个同名列可取到不同下标（下游按 indexOf 定位列）',
+    `i1=${t.fields.indexOf('2020')} i2=${t.fields.indexOf('2020(2)')}`);
+  assert(t.rows[0][0] === 'A' && t.rows[0][1] === '1' && t.rows[0][2] === '2',
+    'CSV 入口：行数据未被改动', JSON.stringify(t.rows[0]));
+}
+{
+  const t = parseDelimitedText('地区\t2020\t2020\nA\t1\t2');
+  assert(t.fields.join(',') === '地区,2020,2020(2)',
+    '粘贴入口（TSV）：重复表头被唯一化', JSON.stringify(t.fields));
+}
+{
+  const t = parseCsvFile('时间,实体,');
+  assert(t.fields[2] === '列3', 'CSV 入口：空表头补为「列N」', JSON.stringify(t.fields));
+}
+{
+  const t = parseCsvFile('时间,实体,数值\n2020,A,1');
+  assert(t.fields.join(',') === '时间,实体,数值', '无重复时表头保持原样', JSON.stringify(t.fields));
+}
+{
+  assert(uniqueFields(['a', 'a', 'a', 'b']).join(',') === 'a,a(2),a(3),b',
+    '三连重名依次加序号', JSON.stringify(uniqueFields(['a', 'a', 'a', 'b'])));
 }
 
 console.log(`\nxlsx 表头回归：${pass} 通过, ${fail} 失败`);
