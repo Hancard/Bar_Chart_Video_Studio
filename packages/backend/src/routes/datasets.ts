@@ -119,9 +119,16 @@ export async function datasetRoutes(app: FastifyInstance) {
 
   app.delete('/projects/:id/datasets', async (req, reply) => {
     const id = Number((req.params as any).id);
-    // 两条写语句原子化：避免中途崩溃留下"数据已删但 dataset_hash 非空"的中间态
+    // 与同文件其它端点一致：项目不存在应 404，而不是 200 + deleted:0
+    const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(id);
+    if (!project) return reply.status(404).send(notFound());
+    // 这几条写语句原子化：避免中途崩溃留下「数据已删但元信息还在」的中间态。
+    // datasets_meta 必须一起清 —— 否则清空数据后 GET /datasets 仍返回上一次的多值列清单，
+    // 前端「值列」下拉里会留着已经不存在的数据列；entities 同理（遗留实体列表已无意义）。
     const r = db.transaction(() => {
       const del = db.prepare('DELETE FROM time_series WHERE project_id = ?').run(id);
+      db.prepare('DELETE FROM datasets_meta WHERE project_id = ?').run(id);
+      db.prepare('DELETE FROM entities WHERE project_id = ?').run(id);
       db.prepare(`UPDATE projects SET dataset_hash = NULL, updated_at = datetime('now') WHERE id = ?`).run(id);
       return del;
     })();
