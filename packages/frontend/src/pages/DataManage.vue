@@ -416,7 +416,13 @@ function resetParse() {
 
 async function clearAll() {
   if (!confirm('确定清空该项目的全部数据？此操作不可恢复。')) return;
-  await store.clearData();
+  try {
+    await store.clearData();
+  } catch (err: any) {
+    // 以前这里没有 catch：后端报错（项目被删/后端没起）时界面毫无反应，
+    // 用户会以为"点了没生效"而反复点。
+    alert(`清空失败：${err?.message ?? err}`);
+  }
 }
 
 onMounted(async () => {
