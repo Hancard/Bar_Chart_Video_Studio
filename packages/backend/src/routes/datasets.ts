@@ -6,6 +6,18 @@ import {
 import { importPayloadSchema, importMultiValuePayloadSchema, decodeBytes } from '@barstudio/shared';
 import { notFound, validationError } from './projects';
 
+/** CSV 文本上传上限：与 sourceUrl 抓取分支的 64MB 检查保持一致 */
+const CSV_UPLOAD_LIMIT = 64 * 1024 * 1024;
+
+function fileTooLarge() {
+  return {
+    error: {
+      code: 'E_FILE_TOO_LARGE',
+      message: `CSV 文件过大（上限 ${CSV_UPLOAD_LIMIT / 1048576}MB）。大表请先在本地裁剪，或改用前端导入（在浏览器端解析后只提交长表）。`,
+    },
+  };
+}
+
 export async function datasetRoutes(app: FastifyInstance) {
   /** JSON 导入（主链路：前端已解析 + 列映射后的长表） */
   app.post('/projects/:id/datasets/import', async (req, reply) => {
@@ -75,9 +87,29 @@ export async function datasetRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: { code: 'E_CSV_PARSE', message: `抓取失败: ${e.message}` } });
       }
     } else {
-      const file = await (req as any).file();
+      // CSV 文本上传单独收紧到 64MB（全局 multipart 上限 512MB 是给成片视频用的）：
+      // toBuffer + decodeBytes + parseLongCsv 会把内容放大好几倍，
+      // 512MB 的 CSV 足以把后端进程的内存打爆，而这类文件其实应该在前端导入。
+      let file: any;
+      try {
+        file = await (req as any).file({ limits: { fileSize: CSV_UPLOAD_LIMIT } });
+      } catch (err: any) {
+        if (err?.code === 'FST_REQ_FILE_TOO_LARGE') {
+          return reply.status(413).send(fileTooLarge());
+        }
+        throw err;
+      }
       if (!file) return reply.status(400).send({ error: { code: 'E_CSV_PARSE', message: '缺少文件' } });
-      const buf = await file.toBuffer();
+      let buf: Buffer;
+      try {
+        buf = await file.toBuffer();
+      } catch (err: any) {
+        if (err?.code === 'FST_REQ_FILE_TOO_LARGE') {
+          return reply.status(413).send(fileTooLarge());
+        }
+        throw err;
+      }
+      if (file.truncated) return reply.status(413).send(fileTooLarge());
       csvText = decodeBytes(buf);
     }
 

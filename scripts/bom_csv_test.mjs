@@ -67,6 +67,31 @@ assert(sumResp.status === 200 && sumJson.data?.entityCount === 2 && sumJson.data
   'summary 端点返回 entityCount=2 timeCount=2',
   `status=${sumResp.status} body=${JSON.stringify(sumJson.data)}`);
 
+// 6. 超过 64MB 的 CSV 必须被拒：全局 multipart 上限 512MB 是给成片视频用的，
+//    文本导入若照单全收，toBuffer + decodeBytes + parseLongCsv 会把内存放大好几倍。
+{
+  const line = '2024,实体X,123456789\n';
+  const times = Math.ceil((70 * 1024 * 1024) / line.length);
+  const big = '时间,实体,数值\n' + line.repeat(times);
+  const fdBig = new FormData();
+  fdBig.append('file', new Blob([new TextEncoder().encode(big)], { type: 'text/csv' }), 'big.csv');
+  let status = 0, code = '';
+  try {
+    const r = await fetch(`${BASE}/projects/${pid}/datasets/upload`, { method: 'POST', body: fdBig });
+    status = r.status;
+    code = (await r.json().catch(() => ({})))?.error?.code ?? '';
+  } catch (e) {
+    status = -1; code = String(e.message ?? e).slice(0, 60);
+  }
+  assert(status === 413 || status === -1,
+    '超过 64MB 的 CSV 被拒（413 或连接被服务端中断），不会被整份读进内存',
+    `status=${status} code=${code}`);
+  // 关键：数据没有被导进去
+  const after = await (await fetch(`${BASE}/projects/${pid}/datasets/summary`)).json();
+  assert(after.data.rowCount === 4, '被拒的上传没有污染已有数据',
+    `rowCount=${after.data.rowCount}（应为 4）`);
+}
+
 await cleanup();
 
 console.log(`\nBOM-multipart 专项：${pass} 通过, ${fail} 失败`);
