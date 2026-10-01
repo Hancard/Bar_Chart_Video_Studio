@@ -12,11 +12,12 @@ type ProjectRow = {
   dataset_hash: string | null; created_at: string; updated_at: string;
 };
 
-function toInfo(row: ProjectRow, recordCount?: number): ProjectInfo {
+function toInfo(row: ProjectRow, recordCount?: number, hasDataFlag?: boolean): ProjectInfo {
   let config: RenderConfig;
   try { config = { ...DEFAULT_RENDER_CONFIG, ...JSON.parse(row.config) }; }
   catch { config = { ...DEFAULT_RENDER_CONFIG }; }
-  // 列表页会一次性把各项目的成片数查出来传进来；单条查询（详情/创建/更新）时按需再查
+  // 列表页会一次性把各项目的成片数与「有没有数据」查出来传进来；
+  // 单条查询（详情 / 创建 / 更新）时按需再查。
   const rc = recordCount
     ?? (db.prepare('SELECT COUNT(*) AS c FROM records WHERE project_id = ?').get(row.id) as { c: number }).c;
   return {
@@ -25,7 +26,7 @@ function toInfo(row: ProjectRow, recordCount?: number): ProjectInfo {
     description: row.description,
     config,
     dataset_hash: row.dataset_hash,
-    hasData: hasData(row.id),
+    hasData: hasDataFlag ?? hasData(row.id),
     recordCount: rc,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -40,8 +41,14 @@ export async function projectRoutes(app: FastifyInstance) {
       'SELECT project_id, COUNT(*) AS c FROM records GROUP BY project_id'
     ).all() as { project_id: number; c: number }[];
     const countMap = new Map(counts.map(r => [r.project_id, r.c]));
+    // 「有没有数据」同理：hasData() 是每个项目一次 COUNT(*)，49 个项目就是 49 次查询。
+    // 一次查出所有有数据的 project_id（DISTINCT 走 idx_ts_project 索引）。
+    const withData = db.prepare(
+      'SELECT DISTINCT project_id FROM time_series'
+    ).all() as { project_id: number }[];
+    const dataSet = new Set(withData.map(r => r.project_id));
     // 注意不能写 rows.map(toInfo)：Array.map 会把下标当第二个实参传进去
-    return { data: rows.map(r => toInfo(r, countMap.get(r.id) ?? 0)) };
+    return { data: rows.map(r => toInfo(r, countMap.get(r.id) ?? 0, dataSet.has(r.id))) };
   });
 
   app.post('/projects', async (req, reply) => {
