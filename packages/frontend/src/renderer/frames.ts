@@ -61,7 +61,6 @@ export interface InterpFrame {
 export function buildDataset(points: SeriesPoint[]): Dataset {
   const values = new Map<number, Map<string, number>>();
   const times = new Map<number, string>();
-  const entities: string[] = [];
   const entitySet = new Set<string>();
   let maxAbs = 0;
 
@@ -69,12 +68,18 @@ export function buildDataset(points: SeriesPoint[]): Dataset {
     if (!times.has(p.time_order)) times.set(p.time_order, p.time_key);
     if (!values.has(p.time_order)) values.set(p.time_order, new Map());
     values.get(p.time_order)!.set(p.entity, p.value);
-    if (!entitySet.has(p.entity)) { entitySet.add(p.entity); entities.push(p.entity); }
+    entitySet.add(p.entity);
     if (Number.isFinite(p.value)) {
       const av = Math.abs(p.value);
       if (av > maxAbs) maxAbs = av;
     }
   }
+
+  // entities 的**顺序**决定配色（makeColorOf 按下标取色）。
+  // 喂进来的 series 是按「time_order ASC, value DESC, entity ASC」排好的，
+  // 若直接用出现顺序，切换值列会让后端重新排序 → 整套配色跟着重排，
+  // 用户看到同一实体突然换了个颜色。这里按实体名做确定性排序，与值列彻底解耦。
+  const entities = [...entitySet].sort((a, b) => a.localeCompare(b, 'zh'));
 
   const timeList = [...times.entries()]
     .sort((a, b) => a[0] - b[0])
