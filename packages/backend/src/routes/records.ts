@@ -21,8 +21,15 @@ function toInfo(row: RecordRow): RecordInfo {
 
 export async function recordRoutes(app: FastifyInstance) {
   app.get('/records', async (req) => {
-    const projectId = Number((req.query as any).projectId);
-    const rows = (projectId > 0
+    const raw = (req.query as any).projectId;
+    const hasFilter = raw !== undefined && String(raw).trim() !== '';
+    const projectId = Number(raw);
+    // 明确传了 projectId 但它不是正整数时返回**空集合**，而不是"全部记录"：
+    // 原来 NaN / 0 / 负数都会落进"不带过滤"分支，调用方拿到的是所有项目的成片。
+    if (hasFilter && (!Number.isInteger(projectId) || projectId <= 0)) {
+      return { data: [] };
+    }
+    const rows = (hasFilter
       ? db.prepare(
           `SELECT r.*, p.title AS project_title FROM records r LEFT JOIN projects p ON p.id = r.project_id
            WHERE r.project_id = ? ORDER BY r.created_at DESC`

@@ -193,6 +193,17 @@ async function run() {
   assert(lr.body.data.length >= 1, 'records 列表 ≥1 条');
   const lr2 = await req('GET', `/records?projectId=${pidA}`);
   assert(lr2.body.data.length === 1, '按 projectId 过滤后 1 条');
+
+  // 22b) 传了非法的 projectId → 空集合（以前会落进"不带过滤"分支，返回全部成片）
+  const qBad = await req('GET', '/records?projectId=abc');
+  assert(qBad.status === 200 && qBad.body.data.length === 0,
+    '非法 projectId(abc) → 空集合，不再返回全部成片', `len=${qBad.body.data.length}`);
+  const qZero = await req('GET', '/records?projectId=0');
+  assert(qZero.body.data.length === 0, 'projectId=0 → 空集合', `len=${qZero.body.data.length}`);
+  const qNeg = await req('GET', '/records?projectId=-5');
+  assert(qNeg.body.data.length === 0, '负数 projectId → 空集合', `len=${qNeg.body.data.length}`);
+  const qEmpty = await req('GET', '/records?projectId=');
+  assert(qEmpty.body.data.length >= 1, '空 projectId 视为未过滤 → 返回全部', `len=${qEmpty.body.data.length}`);
   const lr3 = await req('GET', `/records?projectId=${pidB}`);
   assert(lr3.body.data.length === 0, '按 projectId 过滤后 0 条');
 
