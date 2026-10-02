@@ -90,27 +90,47 @@ export async function datasetRoutes(app: FastifyInstance) {
       // CSV 文本上传单独收紧到 64MB（全局 multipart 上限 512MB 是给成片视频用的）：
       // toBuffer + decodeBytes + parseLongCsv 会把内容放大好几倍，
       // 512MB 的 CSV 足以把后端进程的内存打爆，而这类文件其实应该在前端导入。
+      //
+      // 这里**自己按字节计数收流**，不依赖 @fastify/multipart 的 per-request limits：
+      // 实测同一个请求，limits 有时让流被截断/中断、有时却整份收下并导入成功（不稳定），
+      // 显式计数才能保证行为可预期。
       let file: any;
       try {
-        file = await (req as any).file({ limits: { fileSize: CSV_UPLOAD_LIMIT } });
+        file = await (req as any).file();
       } catch (err: any) {
-        if (err?.code === 'FST_REQ_FILE_TOO_LARGE') {
-          return reply.status(413).send(fileTooLarge());
-        }
+        if (err?.code === 'FST_REQ_FILE_TOO_LARGE') return reply.status(413).send(fileTooLarge());
         throw err;
       }
       if (!file) return reply.status(400).send({ error: { code: 'E_CSV_PARSE', message: '缺少文件' } });
-      let buf: Buffer;
+      const chunks: Buffer[] = [];
+      let size = 0;
+      // 超限时中断并返回 413。注意要显式 `connection: close`：
+      // 请求体没读完就响应，这条 keep-alive 连接上会残留未消费的数据，
+      // 客户端后续复用它会一直等到超时（实测表现为清理请求 8s 超时）。
+      const rejectTooLarge = () => {
+        try { file.file.destroy(); } catch { /* ignore */ }
+        reply.header('connection', 'close');
+        return reply.status(413).send(fileTooLarge());
+      };
       try {
-        buf = await file.toBuffer();
+        for await (const chunk of file.file) {
+          size += (chunk as Buffer).length;
+          if (size > CSV_UPLOAD_LIMIT) return rejectTooLarge();
+          chunks.push(chunk as Buffer);
+        }
       } catch (err: any) {
-        if (err?.code === 'FST_REQ_FILE_TOO_LARGE') {
+        // 流被上游截断/中断：若已超限就按超限报，否则照常抛出
+        if (size > CSV_UPLOAD_LIMIT || err?.code === 'FST_REQ_FILE_TOO_LARGE') {
+          reply.header('connection', 'close');
           return reply.status(413).send(fileTooLarge());
         }
         throw err;
       }
-      if (file.truncated) return reply.status(413).send(fileTooLarge());
-      csvText = decodeBytes(buf);
+      if (file.truncated) {
+        reply.header('connection', 'close');
+        return reply.status(413).send(fileTooLarge());
+      }
+      csvText = decodeBytes(new Uint8Array(Buffer.concat(chunks)));
     }
 
     const { rows, errors } = parseLongCsv(csvText);
