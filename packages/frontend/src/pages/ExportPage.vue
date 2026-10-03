@@ -100,7 +100,7 @@
             <tbody>
               <tr v-for="r in store.records" :key="r.id">
                 <td>{{ r.id }}</td>
-                <td>{{ r.created_at.slice(0, 16) }}</td>
+                <td>{{ formatLocalTime(r.created_at) }}</td>
                 <td>{{ r.width }}×{{ r.height }}@{{ r.fps }}</td>
                 <td>{{ (r.duration_ms / 1000).toFixed(1) }}s</td>
                 <td>{{ (r.size_bytes / 1024 / 1024).toFixed(1) }} MB</td>
@@ -122,6 +122,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import type { RecordInfo } from '@barstudio/shared';
+import { formatLocalTime } from '@barstudio/shared';
 import { api } from '../api/client';
 import { useProjectStore } from '../stores/project';
 import { exportVideo, type ExportProgress, type ExportResult } from '../recorder/exporter';
@@ -186,9 +187,14 @@ async function startExport() {
     result.value = r;
     resultUrl.value = URL.createObjectURL(r.blob);
   } catch (err: any) {
+    // 取消 / 失败后必须清掉进度状态：否则进度条停在一半、stageText 还写着"录制中"，
+    // 用户会以为导出仍在后台跑。
+    progress.value = 0;
+    stageText.value = '';
     if (err?.name === 'AbortError') {
       progressMessage.value = '已取消';
     } else {
+      progressMessage.value = '';
       alert(`导出失败：${err?.message ?? err}`);
     }
   } finally {
@@ -225,8 +231,13 @@ async function archive() {
 
 async function removeRecord(r: RecordInfo) {
   if (!confirm(`删除作品记录 #${r.id}？`)) return;
-  await api.del(`/records/${r.id}`);
-  await store.loadRecords();
+  try {
+    await api.del(`/records/${r.id}`);
+    await store.loadRecords();
+  } catch (err: any) {
+    // 与同页其它操作一致：失败要有提示，不能静默冒掉
+    alert(`删除失败：${err?.message ?? err}`);
+  }
 }
 
 onMounted(async () => {
