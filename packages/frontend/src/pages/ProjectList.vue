@@ -24,7 +24,7 @@
         <div class="pc-desc">{{ p.description || '（无描述）' }}</div>
         <div class="pc-meta">
           <span :class="['tag', p.hasData ? 'ok' : 'warn']">{{ p.hasData ? `已导入数据（${p.config.maxBars} 条上限）` : '无数据' }}</span>
-          <span class="pc-time">更新于 {{ p.updated_at.slice(0, 16) }}</span>
+          <span class="pc-time">更新于 {{ formatLocalTime(p.updated_at) }}</span>
         </div>
         <div class="pc-actions">
           <RouterLink class="pc-link" :to="`/projects/${p.id}/data`">数据</RouterLink>
@@ -66,6 +66,7 @@
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import type { ProjectInfo } from '@barstudio/shared';
+import { formatLocalTime } from '@barstudio/shared';
 import { api } from '../api/client';
 
 const router = useRouter();
