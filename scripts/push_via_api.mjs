@@ -107,7 +107,10 @@ const commits = [];
 if (changesFile) {
   // 离线模式：清单 + 消息都来自文件，文件内容从工作区读
   const changes = parseChanges(readFileSync(changesFile, 'utf8'));
-  const message = readFileSync(messageFile, 'utf8').replace(/\s+$/, '');
+  // git log --format=%B 会在消息本身之外再多带一个换行（实测：内部 300 字符 → 导出 301）。
+  // 这里只去掉那一个，**不能用 /\s+$/** —— 那会把消息自身结尾的换行也吃掉，
+  // 使远端 commit 的 message 比本地少 1 字节（第 15 轮踩过）。
+  const message = readFileSync(messageFile, 'utf8').replace(/\n$/, '');
   const localSha = readFileSync(path.join('.git', 'refs', 'heads', branch), 'utf8').trim();
   commits.push({ sha: localSha, message, changes });
   console.log(`离线模式：${changes.length} 个变更文件`);
