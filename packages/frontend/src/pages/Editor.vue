@@ -271,7 +271,11 @@ let lastTs = 0;
 
 function loop(ts: number) {
   if (!playing.value) return;
-  const dt = lastTs ? (ts - lastTs) / 1000 : 0;
+  // 标签页切到后台时 rAF 会被浏览器暂停，回到前台后的第一帧时间差可能是几百秒 ——
+  // 不设上限的话进度会一下跳到结尾（用户看到的就是"切走再回来已经播完了"）。
+  // 限到 0.1s：正常帧间隔约 16ms，最多容忍 6 帧的合理跳跃。
+  const raw = lastTs ? (ts - lastTs) / 1000 : 0;
+  const dt = Math.min(raw, 0.1);
   lastTs = ts;
   if (totalDur.value > 0) {
     progress.value += (dt * speed.value) / totalDur.value;
