@@ -98,5 +98,39 @@ nextResponse = resp({ data: { id: 3, size_bytes: 4 } }, { status: 201 });
   assert(r?.id === 3, 'uploadFile 正常响应解出 data', JSON.stringify(r));
 }
 
+// 9) fetch 抛网络错误（后端没启动）→ 包装成可定位的 ApiError
+{
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  const r = await expectError(() => api.get('/projects'), 'E_NETWORK');
+  assert(r.threw && r.code === 'E_NETWORK',
+    '网络层异常 → 抛 E_NETWORK（不再是裸的 Failed to fetch）', `threw=${r.threw} code=${r.code}`);
+  assert(/后端/.test(r.message ?? ''), '错误信息里点明"后端可能未启动"', r.message);
+  globalThis.fetch = async () => nextResponse;
+}
+
+// 10) uploadFile 的网络异常同样被包装
+{
+  globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  const r = await expectError(
+    () => api.uploadFile('/records/1/file', new Blob([new Uint8Array(1)]), 'a.mp4'), 'E_NETWORK');
+  assert(r.threw && r.code === 'E_NETWORK', 'uploadFile 网络异常同样包成 E_NETWORK', `code=${r.code}`);
+  globalThis.fetch = async () => nextResponse;
+}
+
+// 11) AbortError 必须原样抛出（调用方靠它区分"主动取消"，不能当成网络故障）
+{
+  globalThis.fetch = async () => {
+    const e = new Error('The operation was aborted');
+    e.name = 'AbortError';
+    throw e;
+  };
+  let err = null;
+  try { await api.get('/projects'); } catch (e) { err = e; }
+  assert(err?.name === 'AbortError' && !(err instanceof ApiError),
+    'AbortError 原样抛出（不被包成 E_NETWORK）',
+    `name=${err?.name} isApiError=${err instanceof ApiError}`);
+  globalThis.fetch = async () => nextResponse;
+}
+
 console.log(`\nAPI client 回归：${pass} 通过, ${fail} 失败`);
 process.exit(fail ? 1 : 0);

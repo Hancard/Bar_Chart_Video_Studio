@@ -24,8 +24,26 @@ function badResponse(status: number): ApiError {
   );
 }
 
+/**
+ * fetch 的网络层异常统一包装。
+ * 直接冒出去的话，用户看到的是 "Failed to fetch"（Chrome）/ "NetworkError when attempting…"（Firefox），
+ * 完全定位不到问题；包成 ApiError 后能明确指向"后端可能没启动"。
+ */
+async function safeFetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw err; // 主动取消原样抛出，交给调用方处理
+    throw new ApiError(
+      'E_NETWORK',
+      `无法连接服务端（${err?.message ?? err}）—— 请确认后端已启动`,
+      0,
+    );
+  }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await safeFetch(`${BASE}${path}`, {
     method,
     headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -51,7 +69,7 @@ export const api = {
   uploadFile: async <T>(path: string, file: Blob, filename: string): Promise<T> => {
     const fd = new FormData();
     fd.append('file', file, filename);
-    const res = await fetch(`${BASE}${path}`, { method: 'POST', body: fd });
+    const res = await safeFetch(`${BASE}${path}`, { method: 'POST', body: fd });
     if (res.status === 204) return undefined as T;
     const json = await readJson(res);
     if (json === null) throw badResponse(res.status);
